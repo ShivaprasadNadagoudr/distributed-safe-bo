@@ -5,5 +5,7 @@ scikit-learn >= 0.20
 matplotlib>=1.3
 safeopt
 notebook
+plotly
+black=21.11b1
 mpi4py
 future

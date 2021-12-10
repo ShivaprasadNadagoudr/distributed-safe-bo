@@ -1,6 +1,11 @@
 import numpy as np
+from typing import Final
 
-bird_function_bounds = [(-2 * np.pi, 2 * np.pi), (-2 * np.pi, 2 * np.pi)]
+BIRD_FUNCTION_BOUNDS: Final = [
+    (-2 * np.pi, 2 * np.pi),
+    (-2 * np.pi, 2 * np.pi)
+]
+BIRD_FUNCTION_THRESHOLD: Final = -35.0
 
 
 def bird_function(X):
