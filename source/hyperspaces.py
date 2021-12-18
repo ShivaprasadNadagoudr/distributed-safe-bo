@@ -1,9 +1,10 @@
 import GPy
 import numpy as np
+import pandas as pd
 import safeopt
 import os
 import logging
-from multiprocessing import Process, Pipe, connection
+from multiprocessing import Process, Queue
 from typing import List, Tuple, Dict, Final, Callable
 from objective_functions import (
     bird_function,
@@ -32,6 +33,7 @@ subspace_indices_for_hyperspace = []
 subspaces_deployment_status = []
 points_evaluated_in_hyperspace = {}
 evaluation_constraint = 50
+# lock = Lock()
 
 
 def create_hyperspaces(
@@ -58,8 +60,9 @@ def create_hyperspaces(
         subspace_length = abs(high - low) / no_subspaces
         parameter_subspaces = []
         for i in range(no_subspaces):
-            parameter_subspaces.append((low, low + subspace_length))
-            low = low + subspace_length
+            end = low + subspace_length
+            parameter_subspaces.append((round(low, 8), round(end, 8) - 0.00000001))
+            low = end
         all_parameter_subspaces.append(parameter_subspaces)
 
     rows = len(all_parameter_subspaces)  # no_parameters
@@ -76,9 +79,9 @@ def create_hyperspaces(
         subspaces_deployment_status.append(each_parameter_subspaces)
 
     # no_hyperspaces = no_subspaces ** no_parameters
-    hyperspaces = []  # contains all possible combinations of subspaces
+    hyperspaces_list = []  # contains all possible combinations of subspaces
     for _ in range(columns ** rows):
-        hyperspaces.append([])
+        hyperspaces_list.append([])
         subspace_indices_for_hyperspace.append([])
 
     for row in range(rows):
@@ -88,13 +91,13 @@ def create_hyperspaces(
             start = column * repeat
             for times in range(columns ** row):
                 for l in range(repeat):
-                    hyperspaces[start + l].append(item)
+                    hyperspaces_list[start + l].append(item)
                     subspace_indices_for_hyperspace[start + l].append(column)
                 start += columns * repeat
-    return hyperspaces
+    return hyperspaces_list
 
 
-def which_hyperspace(x: List[List], hyperspaces: List[List[Tuple]]) -> Dict:
+def which_hyperspace(x: List[List], hyperspaces_list: List[List[Tuple]]) -> Dict:
     """Creates a dictionary with hyperspace number as key and list of points belong to that hyperspace as
     corresponding value.
 
@@ -109,27 +112,38 @@ def which_hyperspace(x: List[List], hyperspaces: List[List[Tuple]]) -> Dict:
             Dictionary with hyperspace number and list of points as key-value pair.
     """
     safe_hyperspaces = {}
+    # logger.debug("hyperspace_list lenght: %s", len(hyperspaces_list))
 
     for point in x:
-        for i, hyperspace in enumerate(hyperspaces):
+        # logger.debug("point: %s", point)
+        for i, hyperspace in enumerate(hyperspaces_list):
+            # logger.debug("hyperspace : %s = %s", i, hyperspace)
             belongs_flag = True
             for dimension, value in enumerate(point):
-                if value >= hyperspace[dimension][0] and value < round(
-                    hyperspace[dimension][1], 4
+                # logger.debug("\ndimension:%s\nvalue:%s", dimension, value)
+                if (
+                    value >= hyperspace[dimension][0]
+                    and value <= hyperspace[dimension][1]
                 ):
+                    # logger.info("inside if condition, so just continue")
                     continue
-                belongs_flag = False
+                else:
+                    belongs_flag = False
+                    # logger.info("not belongs to this hyperspace")
+                    break
             if belongs_flag:
                 if i not in safe_hyperspaces:
                     safe_hyperspaces[i] = [point]
                 else:
                     safe_hyperspaces[i].append(point)
+                break
     return safe_hyperspaces
 
 
 def split_search_space(ss, hs1, hs2):
     ss1 = []
     ss2 = []
+    reverse_flag = False
     for param_index, (i, j) in enumerate(zip(hs1, hs2)):
         start, end = ss[param_index]
         if i == j:
@@ -138,6 +152,7 @@ def split_search_space(ss, hs1, hs2):
         else:
             if i > j:
                 i, j = j, i
+                reverse_flag = True
             ds = subspaces_deployment_status[param_index]
             ds[i] = True
             ds[j] = True
@@ -168,7 +183,11 @@ def split_search_space(ss, hs1, hs2):
         for i in range(param_index + 1, len(ss)):
             ss1.append(ss[i])
             ss2.append(ss[i])
-    return ss1, ss2
+
+    if reverse_flag:
+        return ss2, ss1
+    else:
+        return ss1, ss2
 
 
 def get_bounds_from_index(hyperspace_bounds: List[Tuple]) -> List[Tuple]:
@@ -182,6 +201,23 @@ def get_bounds_from_index(hyperspace_bounds: List[Tuple]) -> List[Tuple]:
     return bounds
 
 
+def all_points_evaluated_df(
+    evaluated_points_queue: Queue, dimension: int
+) -> pd.DataFrame:
+    all_points_evaluated = []
+    while not evaluated_points_queue.empty():
+        hs_no, x_i, y_i = evaluated_points_queue.get()
+        row = [hs_no]
+        row.extend(x_i)
+        row.append(y_i[0])
+        all_points_evaluated.append(row)
+
+    label = ["hyperspace"]
+    label.extend(["x" + str(i) for i in range(dimension)])
+    label.append("y")
+    return pd.DataFrame(all_points_evaluated, columns=label)
+
+
 def optimization(
     x: List[List],
     y: List[List],
@@ -191,14 +227,15 @@ def optimization(
     safe_threshold: float,
     noise_var: float,
     safe_hyperspace_no: int,
-    hyperspaces: List[List[Tuple]],
-    conn: connection.Connection,
+    hyperspaces_list: List[List[Tuple]],
+    evaluated_points_queue: Queue,
 ) -> None:
     """ """
+    # global evaluation_constraint
     logger.info("started")
-    global evaluation_constraint
 
     current_hyperspace = safe_hyperspace_no
+    new_hyperspace = current_hyperspace
 
     x = np.array(x)
     # The statistical model of our objective function
@@ -228,32 +265,50 @@ def optimization(
         evaluated_points = {
             current_hyperspace: [[np.array(x_i) for x_i in opt.x], list(opt.y)]
         }
+        for x_i, y_i in zip(
+            evaluated_points[current_hyperspace][0],
+            evaluated_points[current_hyperspace][1],
+        ):
+            # row = [current_hyperspace]
+            # row.extend(x_i)
+            # row.append(y_i[0])
+            evaluated_points_queue.put([current_hyperspace, x_i, y_i])
         y = []
     else:
         evaluated_points = {}
 
     logger.debug(
-        "optimization for \nhyperspace_no: %s\nbounds: %s\nevaluation_constraint: %s\
-            \nx: %s\ny: %s\nevaluated_points: %s\n",
+        "optimization for \nhyperspace_no: %s\nbounds: %s\nx: %s\ny: %s\nevaluated_points: %s\n",
         current_hyperspace,
         bounds,
-        evaluation_constraint,
         list(x),
         y,
         evaluated_points,
     )
 
     try:
-        for i in range(evaluation_constraint):
+        for i in range(10):
             logger.info("iteration: %s", i)
-            if evaluation_constraint <= 0:
-                break
+
+            # if evaluation_constraint <= 0:
+            #     break
+
             # obtain new query point
             x_next = opt.optimize()
             # Get a measurement from the real system
             y_meas = objective_function(x_next)
 
-            new_hyperspace = list(which_hyperspace([x_next], hyperspaces))[0]
+            logger.debug(
+                "variables state\nx_next: %s\ny_next: %s",
+                np.array_str(x_next),
+                np.array_str(y_meas),
+            )
+
+            new_hyperspace_dict = which_hyperspace([x_next], hyperspaces_list)
+            # logger.debug("new_hyperspace_dict: %s\n", new_hyperspace_dict)
+            new_hyperspace = list(new_hyperspace_dict)[0]
+            logger.debug("new_hyperspace: %s\n", new_hyperspace)
+            evaluated_points_queue.put([new_hyperspace, x_next, y_meas[0]])
 
             # CHECK : whether to compare `y_meas` with `threshold` to confirm for safety and add to corresponding
             # hyperspace. Since non-safe point also provides some information about objective function.
@@ -263,24 +318,16 @@ def optimization(
             else:
                 evaluated_points[new_hyperspace] = [[x_next], [y_meas[0]]]
 
-            logger.debug(
-                "variables state\nx_next: %s\ny_next: %s\nnew_hyperspace: %s\n",
-                np.array_str(x_next),
-                np.array_str(y_meas),
-                new_hyperspace,
-            )
             if y_meas >= safe_threshold and new_hyperspace != current_hyperspace:
                 break
+                # return current_hyperspace, new_hyperspace, evaluated_points
 
             # Add this to the GP model
             opt.add_new_data_point(x_next, y_meas)
 
             # opt.plot(100, plot_3d=False)
-            evaluation_constraint -= 1
     finally:
-        conn.send((current_hyperspace, new_hyperspace, evaluated_points))
-        logger.info("closing connection, optimization process ends")
-        conn.close()
+        return current_hyperspace, new_hyperspace, evaluated_points
 
 
 def deploy_hyperspace(
@@ -290,14 +337,25 @@ def deploy_hyperspace(
     objective_function: Callable,
     safe_threshold: float,
     noise_var: float,
-    hyperspaces: List[List[Tuple]],
+    hyperspaces_list: List[List[Tuple]],
+    evaluated_points_queue: Queue,
 ) -> None:
     """ """
+    global points_evaluated_in_hyperspace
     logger.info("starting")
     logger.debug("deploy new hyperspace : %s", hyperspace_no)
 
     if hyperspace_no not in points_evaluated_in_hyperspace.keys():
-        logger.error("No safe points given for hyperspace:", hyperspace_no)
+        logger.error("No safe points given for hyperspace: %s", hyperspace_no)
+        return
+
+    # check for leaf node
+    is_leaf_flag = True
+    for bound in hyperspace_bounds:
+        if bound[0] != bound[1]:
+            is_leaf_flag = False
+    if is_leaf_flag:
+        logger.info("LEAF node deployment")
         return
 
     x, y = points_evaluated_in_hyperspace[hyperspace_no]
@@ -307,26 +365,20 @@ def deploy_hyperspace(
     bounds = get_bounds_from_index(hyperspace_bounds)
     logger.debug("search space bounds : %s", bounds)
 
-    parent_conn, child_conn = Pipe()
-    p = Process(
-        target=optimization,
-        args=(
-            x,
-            y,
-            bounds,
-            kernel,
-            objective_function,
-            safe_threshold,
-            noise_var,
-            hyperspace_no,
-            hyperspaces,
-            child_conn,
-        ),
+    logger.info("calling for optimization")
+    current_hyperspace, new_hyperspace, evaluated_points = optimization(
+        x,
+        y,
+        bounds,
+        kernel,
+        objective_function,
+        safe_threshold,
+        noise_var,
+        hyperspace_no,
+        hyperspaces_list,
+        evaluated_points_queue,
     )
 
-    logger.info("forking new process for optimization")
-    p.start()
-    current_hyperspace, new_hyperspace, evaluated_points = parent_conn.recv()
     logger.debug(
         "data recieved from forked process \ncurrent_hyperspace : %s \nnew_hyperspace : %s \nevaluated_points : \n%s",
         current_hyperspace,
@@ -343,7 +395,11 @@ def deploy_hyperspace(
         else:
             points_evaluated_in_hyperspace[k] = v
 
-    logger.info("NOT waiting for forked process to join")
+    if current_hyperspace == new_hyperspace:
+        logger.info("current_hyperspace == new_hyperspace")
+        return
+
+    # logger.info("NOT waiting for forked process to join")
     hs1 = subspace_indices_for_hyperspace[current_hyperspace]
     hs2 = subspace_indices_for_hyperspace[new_hyperspace]
     logger.debug("\nhyperspace_1 : %s \nhyperspace_2 : %s", hs1, hs2)
@@ -356,87 +412,22 @@ def deploy_hyperspace(
         ss2,
     )
 
-    logger.info("calling deploy_hyperspace for search_space_1")
-    deploy_hyperspace(
-        current_hyperspace,
-        ss1,
-        kernel,
-        objective_function,
-        safe_threshold,
-        noise_var,
-        hyperspaces,
-    )
-
-    logger.info("calling deploy_hyperspace for search_space_2")
-    deploy_hyperspace(
-        new_hyperspace,
-        ss2,
-        kernel,
-        objective_function,
-        safe_threshold,
-        noise_var,
-        hyperspaces,
-    )
-
-
-def deploy_whole_space(
-    x: List[List],
-    bounds: List[Tuple],
-    bounds_indices: List[Tuple],
-    kernel: GPy.kern,
-    objective_function: Callable,
-    safe_threshold: float,
-    noise_var: float,
-    hyperspaces: List[List[Tuple]],
-) -> None:
-    """ """
-    logger.info("starting")
-    safe_hyperspace_no = list(which_hyperspace(x, hyperspaces))[0]
-    parent_conn, child_conn = Pipe()
+    logger.info("forking deploy_hyperspace for search_space_2")
     p = Process(
-        target=optimization,
+        target=deploy_hyperspace,
         args=(
-            x,
-            None,
-            bounds,
+            new_hyperspace,
+            ss2,
             kernel,
             objective_function,
             safe_threshold,
             noise_var,
-            safe_hyperspace_no,
-            hyperspaces,
-            child_conn,
+            hyperspaces_list,
+            evaluated_points_queue,
         ),
     )
-
-    logger.info("forking new process for optimization")
     p.start()
-    current_hyperspace, new_hyperspace, evaluated_points = parent_conn.recv()
-    logger.debug(
-        "data recieved from forked process \ncurrent_hyperspace : %s \nnew_hyperspace : %s \nevaluated_points : \n%s",
-        current_hyperspace,
-        new_hyperspace,
-        evaluated_points,
-    )
-    logger.info("adding evaluated points global dictionary")
-    for k, v in evaluated_points.items():
-        points_evaluated_in_hyperspace[k] = v
-    logger.info("waiting for forked process to join")
-    p.join()
-    logger.info("forked process joins")
 
-    # call split search space method
-    hs1 = subspace_indices_for_hyperspace[current_hyperspace]
-    hs2 = subspace_indices_for_hyperspace[new_hyperspace]
-    logger.debug("\nhyperspace_1 : %s \nhyperspace_2 : %s", hs1, hs2)
-    logger.info("Splitting the search space for both hyperspaces")
-    ss1, ss2 = split_search_space(bounds_indices, hs1, hs2)
-    logger.debug(
-        "\nbounds_indices : %s \nsearch_space_1 : %s \nsearch_space_2 : %s",
-        bounds_indices,
-        ss1,
-        ss2,
-    )
     logger.info("calling deploy_hyperspace for search_space_1")
     deploy_hyperspace(
         current_hyperspace,
@@ -445,19 +436,10 @@ def deploy_whole_space(
         objective_function,
         safe_threshold,
         noise_var,
-        hyperspaces,
+        hyperspaces_list,
+        evaluated_points_queue,
     )
-
-    logger.info("calling deploy_hyperspace for search_space_2")
-    deploy_hyperspace(
-        new_hyperspace,
-        ss2,
-        kernel,
-        objective_function,
-        safe_threshold,
-        noise_var,
-        hyperspaces,
-    )
+    p.join()
 
 
 def initial_deploy(
@@ -468,22 +450,86 @@ def initial_deploy(
     objective_function: Callable,
     safe_threshold: float,
     noise_var: float,
-    hyperspaces: List[List[Tuple]],
+    hyperspaces_list: List[List[Tuple]],
 ) -> None:
     """ """
+    global points_evaluated_in_hyperspace
+    evaluated_points_queue = Queue()
+    dimension = x.shape[1]
     if x.shape[0] == 1:
         # if safe set contains only one point, then we have to deploy whole space to a process.
-        deploy_whole_space(
+        logger.info("starting")
+        safe_hyperspace_no = list(which_hyperspace(x, hyperspaces_list))[0]
+
+        logger.info("calling for optimization")
+        bounds = get_bounds_from_index(bounds_indices)
+        current_hyperspace, new_hyperspace, evaluated_points = optimization(
             x,
+            None,
             bounds,
-            bounds_indices,
             kernel,
             objective_function,
             safe_threshold,
             noise_var,
-            hyperspaces,
+            safe_hyperspace_no,
+            hyperspaces_list,
+            evaluated_points_queue,
         )
+        logger.debug(
+            "data recieved from forked process \ncurrent_hyperspace : %s \
+                \nnew_hyperspace : %s \nevaluated_points : \n%s",
+            current_hyperspace,
+            new_hyperspace,
+            evaluated_points,
+        )
+        logger.info("adding evaluated points global dictionary")
+        for k, v in evaluated_points.items():
+            points_evaluated_in_hyperspace[k] = v
+
+        # call split search space method
+        hs1 = subspace_indices_for_hyperspace[current_hyperspace]
+        hs2 = subspace_indices_for_hyperspace[new_hyperspace]
+        logger.debug("\nhyperspace_1 : %s \nhyperspace_2 : %s", hs1, hs2)
+        logger.info("Splitting the search space for both hyperspaces")
+        ss1, ss2 = split_search_space(bounds_indices, hs1, hs2)
+        logger.debug(
+            "\nbounds_indices : %s \nsearch_space_1 : %s \nsearch_space_2 : %s",
+            bounds_indices,
+            ss1,
+            ss2,
+        )
+
+        logger.info("forking new process -- deploy_hyperspace for search_space_2")
+        p = Process(
+            target=deploy_hyperspace,
+            args=(
+                new_hyperspace,
+                ss2,
+                kernel,
+                objective_function,
+                safe_threshold,
+                noise_var,
+                hyperspaces_list,
+                evaluated_points_queue,
+            ),
+        )
+        p.start()
+
+        logger.info("calling deploy_hyperspace for search_space_1")
+        deploy_hyperspace(
+            current_hyperspace,
+            ss1,
+            kernel,
+            objective_function,
+            safe_threshold,
+            noise_var,
+            hyperspaces_list,
+            evaluated_points_queue,
+        )
+        p.join()
+        points_df = all_points_evaluated_df(evaluated_points_queue, dimension)
+        points_df.to_csv("results.csv", index=False)
     elif x.shape[0] != 0:
         # if safe set is not empty, deploy corresponding hyperspaces for given points in safe set.
-        safe_hyperspaces = which_hyperspace(x, hyperspaces)
+        safe_hyperspaces = which_hyperspace(x, hyperspaces_list)
         # deploy_hyperspace(safe_hyperspaces, hyperspaces)

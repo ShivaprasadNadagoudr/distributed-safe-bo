@@ -13,7 +13,7 @@ if __name__ == "__main__":
     bounds_indices = [(0, no_subspaces - 1) for _ in range(len(bounds))]
     safe_threshold = BIRD_FUNCTION_THRESHOLD
     # parameter_set = safeopt.linearly_spaced_combinations(bounds, 1000)
-    hyperspaces = create_hyperspaces(bounds, no_subspaces)
+    hyperspaces_list = create_hyperspaces(bounds, no_subspaces)
 
     # Measurement noise
     noise_var = 0.25 ** 2
@@ -40,5 +40,5 @@ if __name__ == "__main__":
         objective_function,
         safe_threshold,
         noise_var,
-        hyperspaces,
+        hyperspaces_list,
     )
