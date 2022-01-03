@@ -1,16 +1,13 @@
 import GPy
 import numpy as np
 from hyperspaces import create_hyperspaces, initial_deploy
-import objective_functions as obj_fun
-from sklearn_functions import svc_crossval
+import sklearn_functions as skf
 
 if __name__ == "__main__":
-    # bounds = obj_fun.LANGERMANN_FUNCTION_BOUNDS
-    bounds = [(-3, 2), (-4, -1)]
+    bounds = skf.SVC_BOUNDS
     no_subspaces = 4
     bounds_indices = [[0, no_subspaces - 1] for _ in range(len(bounds))]
-    # safe_threshold = obj_fun.LANGERMANN_FUNCTION_THRESHOLD
-    safe_threshold = 0.90
+    safe_threshold = skf.SVC_THRESHOLD
     # parameter_set = safeopt.linearly_spaced_combinations(bounds, 1000)
     hyperspaces_list = create_hyperspaces(bounds, no_subspaces)
 
@@ -30,7 +27,7 @@ if __name__ == "__main__":
 
     # true function
     # objective_function = obj_fun.langermann_function
-    objective_function = svc_crossval
+    objective_function = skf.svc_crossval
 
     initial_deploy(
         x0,
@@ -41,5 +38,5 @@ if __name__ == "__main__":
         safe_threshold,
         noise_var,
         hyperspaces_list,
-        obj_fun.LANGERMANN_FUNCTION_NAME,
+        skf.SVC_NAME,
     )

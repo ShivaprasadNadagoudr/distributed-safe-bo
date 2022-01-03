@@ -3,4 +3,5 @@ __pycache__/
 dbo-env/
 .vscode/
 *.log
-results.csv
+results/
+

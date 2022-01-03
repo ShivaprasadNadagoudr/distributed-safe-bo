@@ -2,7 +2,7 @@ import GPy
 import numpy as np
 import pandas as pd
 import safeopt
-import os
+import time
 import logging
 from multiprocessing import Process, Queue
 from typing import List, Tuple, Dict, Final, Callable
@@ -16,7 +16,7 @@ from objective_functions import (
 # logging.basicConfig(format="%(process)d-%(levelname)s-%(message)s")
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+# logger.setLevel(logging.DEBUG)
 # Create handlers
 f_handler = logging.FileHandler("file.log", "w")
 # f_handler.setLevel(logging.INFO)
@@ -32,7 +32,7 @@ all_parameter_subspaces = []
 subspace_indices_for_hyperspace = []
 subspaces_deployment_status = []
 points_evaluated_in_hyperspace = {}
-evaluation_constraint = 50
+# evaluation_constraint = 50
 # lock = Lock()
 
 
@@ -251,6 +251,7 @@ def optimization(
     opt = safeopt.SafeOptSwarm(
         gp, BIRD_FUNCTION_THRESHOLD, bounds=bounds, threshold=0.2
     )
+    # parameter_set = safeopt.linearly_spaced_combinations(bounds, 1000)
     # opt = safeopt.SafeOpt(
     #     gp,
     #     parameter_set,
@@ -330,6 +331,20 @@ def optimization(
         return current_hyperspace, new_hyperspace, evaluated_points
 
 
+def all_hyperspaces_in_search_space(search_space: List) -> List:
+    global subspace_indices_for_hyperspace
+    hyperspace_number_list = []
+    for hs_no, hs in enumerate(subspace_indices_for_hyperspace):
+        belongs_flag = True
+        for subspace_no, subspace_range in zip(hs, search_space):
+            if subspace_no < subspace_range[0] or subspace_no > subspace_range[1]:
+                belongs_flag = False
+                break
+        if belongs_flag:
+            hyperspace_number_list.append(hs_no)
+    return hyperspace_number_list
+
+
 def deploy_hyperspace(
     hyperspace_no: int,
     hyperspace_bounds: List[Tuple],
@@ -356,9 +371,42 @@ def deploy_hyperspace(
             is_leaf_flag = False
     if is_leaf_flag:
         logger.info("LEAF node deployment")
+        x, y = points_evaluated_in_hyperspace[hyperspace_no]
+        logger.debug("points_evaluated : \nx : %s \ny : %s", x, y)
+
+        logger.info("getting bounds from indices")
+        bounds = get_bounds_from_index(hyperspace_bounds)
+        logger.debug("search space bounds : %s", bounds)
+
+        logger.info("calling for optimization")
+        current_hyperspace, new_hyperspace, evaluated_points = optimization(
+            x,
+            y,
+            bounds,
+            kernel,
+            objective_function,
+            safe_threshold,
+            noise_var,
+            hyperspace_no,
+            hyperspaces_list,
+            evaluated_points_queue,
+        )
+
+        logger.debug(
+            "data recieved from forked process \ncurrent_hyperspace : %s \nnew_hyperspace : %s \nevaluated_points : \n%s",
+            current_hyperspace,
+            new_hyperspace,
+            evaluated_points,
+        )
         return
 
-    x, y = points_evaluated_in_hyperspace[hyperspace_no]
+    all_hyperspaces_no = all_hyperspaces_in_search_space(hyperspace_bounds)
+    x, y = [], []
+    for hyperspace_index in all_hyperspaces_no:
+        if hyperspace_index in points_evaluated_in_hyperspace.keys():
+            x_i, y_i = points_evaluated_in_hyperspace[hyperspace_index]
+            x.extend(x_i)
+            y.extend(y_i)
     logger.debug("points_evaluated : \nx : %s \ny : %s", x, y)
 
     logger.info("getting bounds from indices")
@@ -451,12 +499,14 @@ def initial_deploy(
     safe_threshold: float,
     noise_var: float,
     hyperspaces_list: List[List[Tuple]],
+    objective_function_name: str,
 ) -> None:
     """ """
     global points_evaluated_in_hyperspace
     evaluated_points_queue = Queue()
     dimension = x.shape[1]
     if x.shape[0] == 1:
+        start_time = time.time()
         # if safe set contains only one point, then we have to deploy whole space to a process.
         logger.info("starting")
         safe_hyperspace_no = list(which_hyperspace(x, hyperspaces_list))[0]
@@ -476,7 +526,7 @@ def initial_deploy(
             evaluated_points_queue,
         )
         logger.debug(
-            "data recieved from forked process \ncurrent_hyperspace : %s \
+            "\ncurrent_hyperspace : %s \
                 \nnew_hyperspace : %s \nevaluated_points : \n%s",
             current_hyperspace,
             new_hyperspace,
@@ -527,9 +577,54 @@ def initial_deploy(
             evaluated_points_queue,
         )
         p.join()
-        points_df = all_points_evaluated_df(evaluated_points_queue, dimension)
-        points_df.to_csv("results.csv", index=False)
+        end_time = time.time()
+        save_results(
+            evaluated_points_queue,
+            dimension,
+            objective_function_name,
+            end_time - start_time,
+            safe_threshold,
+        )
+
     elif x.shape[0] != 0:
         # if safe set is not empty, deploy corresponding hyperspaces for given points in safe set.
         safe_hyperspaces = which_hyperspace(x, hyperspaces_list)
         # deploy_hyperspace(safe_hyperspaces, hyperspaces)
+
+
+def save_results(
+    evaluated_points_queue,
+    x_dimension,
+    objective_function_name,
+    total_run_time,
+    safe_threshold,
+):
+    points_df = all_points_evaluated_df(evaluated_points_queue, x_dimension)
+    points_df.to_csv(
+        "./results/"
+        + objective_function_name
+        + time.strftime("_%d_%b_%Y_%H_%M_%S", time.localtime())
+        + ".csv",
+        index=False,
+    )
+    report = "Total run time : %f\n" % total_run_time
+    no_points_evaluated = points_df.shape[0]
+    report += "Number of points evaluated : %d\n" % no_points_evaluated
+    no_unsafe_evaluation = points_df.y[points_df.y < safe_threshold].count()
+    report += "Number of unsafe evaluations : %d\n" % no_unsafe_evaluation
+    optimum_value = points_df["y"].max()
+    optimum_value_at = points_df.iloc[points_df["y"].idxmax()][
+        1 : points_df.shape[1] - 1
+    ]
+    report += "Optimization results\ny = %f\nat\n%s" % (
+        optimum_value,
+        optimum_value_at.to_string(),
+    )
+    with open(
+        "./results/"
+        + objective_function_name
+        + time.strftime("_%d_%b_%Y_%H_%M_%S", time.localtime())
+        + ".txt",
+        "w",
+    ) as res_file:
+        res_file.write(report)
