@@ -17,7 +17,7 @@ Z = (
 fig = go.Figure(data=[go.Surface(z=-Z, x=x, y=y)])
 
 fig.update_layout(
-    title="Bird Function",
+    title="Michalewicz Function",
     autosize=False,
     width=1280,
     height=720,

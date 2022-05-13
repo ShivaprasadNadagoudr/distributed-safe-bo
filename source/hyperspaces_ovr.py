@@ -1,12 +1,14 @@
 import GPy
 import numpy as np
-import pandas as pd
 import safeopt
 import ray
 import time
+import logging
+import pandas as pd
+import random
 import sys
 import asyncio
-import logging
+from sklearn.preprocessing import MinMaxScaler
 from typing import List, Tuple, Dict, Callable
 
 
@@ -21,7 +23,11 @@ class SharedData:
     """
 
     def __init__(
-        self, bounds: List[Tuple], no_subspaces: int, no_evaluations: int = 50,
+        self,
+        bounds: List[Tuple],
+        no_subspaces: int,
+        no_evaluations: int = 50,
+        overlap: float = 0.15,
     ) -> None:
         """Creates a SharedData actor on a worker, also initializes shared data structures.
 
@@ -46,8 +52,12 @@ class SharedData:
         self.subspace_indices_for_hyperspace = []
         self.subspaces_deployment_status = []
         self.hyperspaces_list = []  # contains all possible combinations of subspaces
+        self.overlap = overlap
         self.create_hyperspaces()
         self.bounds_indices = [[0, no_subspaces - 1] for _ in range(len(bounds))]
+        self.shared_points_to_hyperspaces = [
+            [] for _ in range(len(self.hyperspaces_list))
+        ]
         self.worker_count = 0
         self.event = asyncio.Event()
 
@@ -64,7 +74,7 @@ class SharedData:
         # print("worker_count=%d" % self.worker_count)
         if self.worker_count == 0:
             # print("all processes died")
-            # time.sleep(5)
+            # time.sleep(2)
             self.event.set()
 
     def get_no_evaluations(self):
@@ -78,16 +88,35 @@ class SharedData:
     def get_current_worker_count(self):
         return self.worker_count
 
-    def append_point_evaluated(self, point) -> None:
+    def append_point_evaluated(self, point: List, share_to_hyperspaces: List) -> None:
         """Appends a newly evaluated point in a hyperspace into SharedData all_points_evaluated list"""
         self.all_points_evaluated.append(point)
         # logging.info(self.all_points_evaluated)
+        if len(share_to_hyperspaces) != 0:
+            # self.send_shared_points_to_hyperspaces(point, share_to_hyperspaces)
+            for hyperspace in share_to_hyperspaces:
+                self.shared_points_to_hyperspaces[hyperspace].append(point)
+
+    def clear_shared_points(self, hyperspaces_no: List):
+        """Clears the shared points for a hyperspace because they are alredy inserted into model from all_points_evaluated"""
+        for hyperspace in hyperspaces_no:
+            self.shared_points_to_hyperspaces[hyperspace] = []
+
+    def get_shared_points(self, hyperspaces_no: List):
+        """Returns the shared points for requested hyperspaces list (all hyperspaces in current search space)"""
+        points = []
+        for hyperspace in hyperspaces_no:
+            if len(self.shared_points_to_hyperspaces[hyperspace]) == 0:
+                pass
+            else:
+                for point in self.shared_points_to_hyperspaces[hyperspace]:
+                    points.append(point)
+                self.shared_points_to_hyperspaces[hyperspace] = []
+        return points
 
     def get_all_points_evaluated(self):
-        # x, y = [], []
-        # for evaluation in self.all_points_evaluated:
-        #     x.append(evaluation[:-1])
-        #     y.append(evaluation[-1])
+        """Return all points evaluated in whole searc space"""
+        # not converting to numpy array here, because SharedData worker can get busy in serving data to other workers.
         return self.all_points_evaluated
 
     def get_hyperspaces_list(self):
@@ -104,16 +133,23 @@ class SharedData:
 
     def create_hyperspaces(self):
         """Creates hyperspaces for the given parameters by dividing each of them into given number of subspaces."""
-
         # to divide each parameter space into given number of subspaces
         for parameter_space in self.bounds:
             low, high = parameter_space
             subspace_length = abs(high - low) / self.no_subspaces
+            overlap_lenght = subspace_length * self.overlap / 2
+            end = low + subspace_length + overlap_lenght
             parameter_subspaces = []
-            for i in range(self.no_subspaces):
-                end = low + subspace_length
-                parameter_subspaces.append((round(low, 8), round(end, 8) - 0.00000001))
-                low = end
+            parameter_subspaces.append((round(low, 8), round(end, 8)))
+            low = low + subspace_length
+            for _ in range(1, self.no_subspaces - 1):
+                end = low + subspace_length + overlap_lenght
+                parameter_subspaces.append(
+                    (round(low - overlap_lenght, 8), round(end, 8))
+                )  # remove rounding, as there is overlapping subspaces is going on. no need to precise look for hyperspace
+                low = low + subspace_length
+            end = low + subspace_length
+            parameter_subspaces.append((round(low - overlap_lenght, 8), round(end, 8)))
             self.all_parameter_subspaces.append(parameter_subspaces)
 
         rows = len(self.all_parameter_subspaces)  # no_parameters
@@ -160,8 +196,6 @@ class SharedData:
         Args:
             x:
                 List of points.
-            hyperspaces:
-                List containing all hyperspaces.
 
         Returns:
             safe_hyperspaces:
@@ -192,7 +226,9 @@ class SharedData:
                         safe_hyperspaces[i] = [point]
                     else:
                         safe_hyperspaces[i].append(point)
-                    break
+                    # to break the loop after first hyperspace for which point belongs, so commenting `break` will
+                    # produce a dictionary where multiple hyperspaces are included as key for a point (case of overlapped hyperspaces)
+                    # break
         # logging.debug(safe_hyperspaces)
         return safe_hyperspaces
 
@@ -268,6 +304,26 @@ class SharedData:
             bounds.append((low, high))
         return bounds
 
+    def get_all_hyperspaces_in_current_search_space(
+        self, bounds_indices: List[Tuple]
+    ) -> List:
+        """Return all hyperspaces for given search space bound indices"""
+        result = []
+        for hs_no, hs_indices in enumerate(self.subspace_indices_for_hyperspace):
+            flag = True
+            for dim, hs_indice in enumerate(hs_indices):
+                if (
+                    hs_indice >= bounds_indices[dim][0]
+                    and hs_indice <= bounds_indices[dim][1]
+                ):
+                    continue
+                else:
+                    flag = False
+                    break
+            if flag:
+                result.append(hs_no)
+        return result
+
 
 @ray.remote(resources={"resource1": 1})
 class DeployHyperspace:
@@ -308,6 +364,7 @@ class DeployHyperspace:
             if bounds_indices
             else ray.get(self.shared_data.get_bounds_indices.remote())
         )
+
         #  define the kernel from dictionary
         self.kernel_dict = kernel_dict
         if self.kernel_dict["name"] == "RBF":
@@ -328,6 +385,21 @@ class DeployHyperspace:
                 input_dim=len(self.bounds), variance=2.0, lengthscale=1.0, ARD=True
             )
 
+        self.all_hyperspaces_current_search_space = ray.get(
+            self.shared_data.get_all_hyperspaces_in_current_search_space.remote(
+                self.bounds_indices
+            )
+        )
+        logging.info(
+            "all_hyperspaces_current_search_space : %s",
+            self.all_hyperspaces_current_search_space,
+        )
+
+        # if x is None:
+        #     logging.info("x is none")  # self.deploy_hyperspace()
+        # else:
+        #     logging.info("Starting initial_deploy")
+        #     self.initial_deploy()
         self.worker_name = worker_name
         self.shared_data.update_worker_count.remote(True, self.worker_name)
 
@@ -335,6 +407,16 @@ class DeployHyperspace:
         logging.info("Updating bounds")
         self.bounds = bounds
         self.bounds_indices = bounds_indices
+        # update the hyperspaces_list in current search space
+        self.all_hyperspaces_current_search_space = ray.get(
+            self.shared_data.get_all_hyperspaces_in_current_search_space.remote(
+                self.bounds_indices
+            )
+        )
+        logging.info(
+            "all_hyperspaces_current_search_space : %s",
+            self.all_hyperspaces_current_search_space,
+        )
 
     def optimization(
         self, x: List[List], y: List[List], safe_hyperspace_no: int,
@@ -346,6 +428,11 @@ class DeployHyperspace:
         new_hyperspace = current_hyperspace
 
         if x is None:
+            # clear shared data points, because they are already contained in all_points
+            # so, no duplicate adding
+            self.shared_data.clear_shared_points.remote(
+                self.all_hyperspaces_current_search_space
+            )
             all_points = ray.get(self.shared_data.get_all_points_evaluated.remote())
             x, y = [], []
             for point in all_points:
@@ -360,7 +447,7 @@ class DeployHyperspace:
         if y is None:
             y = self.objective_function(x)
             gp = GPy.models.GPRegression(x, y, self.kernel, noise_var=self.noise_var)
-            self.shared_data.append_point_evaluated.remote([x[0], y[0]])
+            self.shared_data.append_point_evaluated.remote([x[0], y[0]], [])
         else:
             y = np.array(y)
             gp = GPy.models.GPRegression(x, y, self.kernel, noise_var=self.noise_var)
@@ -381,17 +468,30 @@ class DeployHyperspace:
             self.bounds,
         )
 
-        # found_new_hyperspace_flag = False
         try:
             evaluation_constraint = ray.get(
                 self.shared_data.get_no_evaluations.remote()
             )
-            # logging.info(
-            #     "Before while - Evaluation constraint %d", evaluation_constraint
-            # )
+            logging.info(
+                "Before while - Evaluation constraint %d", evaluation_constraint
+            )
             while evaluation_constraint > 0:
                 # logging.info("iteration: %s", i)
                 logging.info("Evaluation constraint %d", evaluation_constraint)
+
+                # getting and adding shared points to the model
+                shared_points = ray.get(
+                    self.shared_data.get_shared_points.remote(
+                        self.all_hyperspaces_current_search_space
+                    )
+                )
+                logging.info("Got %d shared points", len(shared_points))
+                logging.debug(shared_points)
+                for point in shared_points:
+                    logging.debug(point)
+                    x = np.array(point[0])
+                    y = np.array(point[1])
+                    opt.add_new_data_point(x, y)
 
                 # obtain new query point
                 x_next = opt.optimize()
@@ -404,23 +504,50 @@ class DeployHyperspace:
                     np.array_str(y_meas),
                 )
 
-                self.shared_data.append_point_evaluated.remote([x_next, y_meas[0]])
+                point_hyperspaces = list(
+                    ray.get(self.shared_data.which_hyperspace.remote([x_next]))
+                )
+                logging.debug("point_hyperspaces : %s", point_hyperspaces)
+
+                # maintain list which contains all the hyperspaces in current search space
+                # since which_hyperspace() will return all the hyperspaces in which the point belongs
+                # then remove all the hyperspaces that are not belong to current search space
+                legit_hyperspaces = set(
+                    self.all_hyperspaces_current_search_space
+                ).intersection(set(point_hyperspaces))
+                logging.debug("legit_hyperspaces : %s", legit_hyperspaces)
+
+                # share point to hyperspaces (hyperspaces for which the point belongs to but not in current search space)
+                share_to_hyperspaces = set(point_hyperspaces) - set(
+                    self.all_hyperspaces_current_search_space
+                )
+
+                logging.info(
+                    "Sharing point to hyperspaces %s", list(share_to_hyperspaces)
+                )
+                self.shared_data.append_point_evaluated.remote(
+                    [x_next, y_meas[0]], list(share_to_hyperspaces)
+                )
 
                 # CHECK : whether to compare `y_meas` with `threshold` to confirm for safety and add to corresponding
-                # hyperspace. Since non-safe point also provides some information about objective function.
+                # hyperspace. Since non-safe point also provides some information about objective function
 
-                if y_meas >= self.safe_threshold:
-                    new_hyperspace = list(
-                        ray.get(self.shared_data.which_hyperspace.remote([x_next]))
-                    )[0]
-                    logging.debug("new_hyperspace: %s", new_hyperspace)
-                    # found_new_hyperspace_flag = True
-                    if new_hyperspace != current_hyperspace:
+                if current_hyperspace in point_hyperspaces:
+                    logging.info("new_hyperspace = current_hyperspace")
+                    new_hyperspace = current_hyperspace
+                else:
+                    logging.info("new_hyperspace != current_hyperspace")
+                    new_hyperspace = random.choice(list(legit_hyperspaces))
+                    if y_meas >= self.safe_threshold:
                         break
+                    else:
+                        new_hyperspace = current_hyperspace
+
+                logging.debug("new_hyperspace: %s", new_hyperspace)
 
                 # Add this to the GP model
                 opt.add_new_data_point(x_next, y_meas)
-                time.sleep(2)
+                time.sleep(1)
 
                 # get the evaluation_constraint
                 evaluation_constraint = ray.get(
@@ -530,8 +657,9 @@ class DeployHyperspace:
 
             new_node.deploy_hyperspace.remote(new_hyperspace)
 
-            self.bounds = ray.get(self.shared_data.get_bounds_from_index.remote(ss1))
-            self.bounds_indices = ss1
+            bounds = ray.get(self.shared_data.get_bounds_from_index.remote(ss1))
+            bounds_indices = ss1
+            self.set_bounds(bounds, bounds_indices)
             self.deploy_hyperspace(current_hyperspace)
         else:
             logging.info("no_evaluations_remaining <= no_current_workers")
@@ -555,9 +683,11 @@ def initial_deploy(
 
         logging.info("starting")
 
-        safe_hyperspace_no = list(
-            ray.get(shared_data.which_hyperspace.remote(safe_set))
-        )[0]
+        # Here we may get more than one hyperspace as the point may belong to overlapped hyperspace.
+        # choose only one hyperspace to start the optimization process
+        safe_hyperspace_no = random.choice(
+            list(ray.get(shared_data.which_hyperspace.remote(safe_set)))
+        )
 
         logging.info("calling optimization for hyperspace %d", safe_hyperspace_no)
 
@@ -679,7 +809,9 @@ def bird_function(X):
 
 async def main():
     ray.init(
-        address="172.20.46.18:8888", _redis_password="5241590000000000", namespace="dbo"
+        address="172.20.46.18:8888",
+        _redis_password="5241590000000000",
+        namespace="dbo_overlapped",
     )
 
     time_str = time.strftime("%d_%b_%H_%M_%S_", time.localtime())
@@ -692,22 +824,23 @@ async def main():
 
     objective_function_name = "bird_function"
     bounds = [(-2 * np.pi, 2 * np.pi), (-2 * np.pi, 2 * np.pi)]
-    safe_threshold = -25.0
+    safe_threshold = -35.0
     # GP_regression noise
-    noise_var = 0.05 ** 2
+    noise_var = 0.001
     kernel_dict = {
         "name": "RBF",
         "input_dim": len(bounds),
-        "variance": 2.0,
+        "variance": 1.0,
         "lengthscale": 1.0,
         "ARD": True,
     }
     objective_function = bird_function
-    # parameter_set = safeopt.linearly_spaced_combinations(bounds, 1000)
     no_subspaces = 2
+    overlap = 0.15
     evaluation_constraint = 100
-    shared_data: SharedData = SharedData.options(name="SharedData").remote(
-        bounds, no_subspaces, evaluation_constraint
+    # parameter_set = safeopt.linearly_spaced_combinations(bounds, 1000)
+    shared_data = SharedData.options(name="SharedData").remote(
+        bounds, no_subspaces, evaluation_constraint, overlap
     )
 
     # Initial safe set
@@ -742,7 +875,7 @@ async def main():
     labels.append("y")
     points_df.set_axis(labels=labels, axis="columns", inplace=True)
     points_df.to_csv(
-        "./results-data/" + objective_function_name + "_dbo_" + time_str + "log.csv",
+        "./result-data/" + objective_function_name + "_ovr_" + time_str + "log.csv",
         index=False,
     )
 
@@ -756,7 +889,7 @@ async def main():
         optimum_value_at.to_string(),
     )
     with open(
-        "./results-data/" + objective_function_name + "_dbo_" + time_str + "log.txt",
+        "./result-data/" + objective_function_name + "_ovr_" + time_str + "log.txt",
         "w",
     ) as res_file:
         res_file.write(report)

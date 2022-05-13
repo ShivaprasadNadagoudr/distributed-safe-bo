@@ -3,8 +3,8 @@ import plotly.graph_objects as go
 import numpy as np
 
 # Make data.
-X = np.linspace(-2, 2, 100)
-Y = np.linspace(-2, 2, 100)
+X = np.linspace(-2, 0, 100)
+Y = np.linspace(-2, 0, 100)
 x, y = np.meshgrid(X, Y)
 
 Z = (
