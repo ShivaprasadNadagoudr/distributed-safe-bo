@@ -7,7 +7,7 @@ X = np.linspace(-2, 0, 100)
 Y = np.linspace(-2, 0, 100)
 x, y = np.meshgrid(X, Y)
 
-Z = (
+Z = -(
     np.sum([i * np.cos((i - 1) * x + i) for i in range(1, 6)], axis=0)
     * np.sum([j * np.cos((j + 1) * y + j) for j in range(1, 6)], axis=0)
     + (x + 1.42513) ** 2

@@ -31,7 +31,7 @@ def bird_function(X):
 
 # Langermann's function.
 LANGERMANN_FUNCTION_BOUNDS = [(3, 5), (3, 5)]
-LANGERMANN_FUNCTION_THRESHOLD = -0.3
+LANGERMANN_FUNCTION_THRESHOLD = -0.5
 LANGERMANN_FUNCTION_NAME = "langermann_function"
 
 # Test functions for optimization needs - Marcin Molga, Czesław Smutnicki
@@ -63,8 +63,8 @@ def langermann_function(X):
 
 
 # Levy05 function
-LEVY05_FUNCTION_BOUNDS = [(-2, 2), (-2, 2)]
-LEVY05_FUNCTION_THRESHOLD = -20.0
+LEVY05_FUNCTION_BOUNDS = [(-2, 0), (-2, 0)]
+LEVY05_FUNCTION_THRESHOLD = -50.0
 LEVY05_FUNCTION_NAME = "levy05_function"
 
 # http://infinity77.net/global_optimization/test_functions_nd_L.html
@@ -95,7 +95,7 @@ MICHALEWICZ_FUNCTION_BOUNDS = [
     (0, np.pi),
     (0, np.pi),
 ]
-MICHALEWICZ_FUNCTION_THRESHOLD = 0.001  # mean is 0.46
+MICHALEWICZ_FUNCTION_THRESHOLD = 0.8  # mean is 0.46
 MICHALEWICZ_FUNCTION_NAME = "michalewicz_function"
 
 

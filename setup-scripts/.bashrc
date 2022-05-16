@@ -141,7 +141,7 @@ if [[ -n $SSH_CONNECTION ]]; then
 
     # to activate Ray environment and start ray process
     cd /home/mtech/Documents/bo-prog/distributed-safe-bo/
-    conda activate ray-test
+    conda activate ray-mujoco
     ray start --address='172.20.46.18:8888' --redis-password='5241590000000000' --resources='{"resource1": 1}'
 else
     # export EDITOR='mvim'

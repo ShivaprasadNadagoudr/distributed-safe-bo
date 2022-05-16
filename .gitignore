@@ -1,8 +1,12 @@
 __pycache__/
 .ipynb_checkpoints/
+.DS_Store
 dbo-env/
 .vscode/
 logs/
-results/
 results-data/
+dataset/
 data/
+data.bak/
+*.pdf
+*.png
