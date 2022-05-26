@@ -1,15 +1,19 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib
+import matplotlib as mpl
 import GPy
 from safeopt import SafeOpt, linearly_spaced_combinations
 
+# mpl.rcParams["figure.figsize"] = (30.0, 20.0)
+mpl.rcParams["font.size"] = 32
+# mpl.rcParams["lines.markersize"] = 20
+
 df_sbo = pd.read_csv(
-    "./results/panda-robot/data/panda_robot_sbo_16_May_10_42_35_log.csv"
+    "./results/panda-robot/data/panda_robot_sbo_17_May_15_18_51_log.csv"
 )
 df_dbo = pd.read_csv(
-    "./results/panda-robot/data/panda_robot_dbo_16_May_14_58_54_log.csv"
+    "./results/panda-robot/data/panda_robot_dbo_17_May_15_55_30_log.csv"
 )
 df_ovr = pd.read_csv(
     "./results/panda-robot/data/panda-robot_ovr_16_May_15_21_03_log.csv"
@@ -37,8 +41,8 @@ bounds = [[-1, 1], [-1, 1]]
 parameter_set = linearly_spaced_combinations(bounds, num_samples=100)
 opt = SafeOpt([fun_gp, cons_gp], parameter_set, fmin=[-np.inf, 0], beta=3.5)
 
-q = np.linspace(-1, 1, 25)
-r_cost = np.linspace(-1, 1, 25)
+q = np.linspace(-1, 1, 30)
+r_cost = np.linspace(-1, 1, 30)
 a = np.asarray(np.meshgrid(q, r_cost)).T.reshape(-1, 2)
 input = a
 mean, var = opt.gps[1].predict(input)  # predicting `g1` for input
@@ -55,9 +59,9 @@ safe_l_f = l_f[safe_idx]  # safe function values
 safe_max = np.where(l_f == safe_l_f.max())[0]  # safe maximum
 optimum_params = a[safe_max, :]  # take corresponding params
 optimum_params = optimum_params.squeeze()
-q = np.reshape(a[:, 0], [25, 25])  # reshaping 0th (q) column to 25x25
-r_cost = np.reshape(a[:, 1], [25, 25])  # reshaping 1st (r) column to 25x25
-values = values.reshape([25, 25])  # reshaping safe_sate values to 25x25
+q = np.reshape(a[:, 0], [30, 30])  # reshaping 0th (q) column to 30x30
+r_cost = np.reshape(a[:, 1], [30, 30])  # reshaping 1st (r) column to 30x30
+values = values.reshape([30, 30])  # reshaping safe_sate values to 30x30
 colours = ["red", "green"]
 fig = plt.figure(figsize=(10, 10))
 left, bottom, width, height = 0.1, 0.1, 0.8, 0.8
@@ -66,7 +70,7 @@ ax.set_xlabel("q")
 ax.set_ylabel("r")
 cs = ax.contourf(q * 6, r_cost * 3, values)
 ax.scatter(
-    q * 6, r_cost * 3, c=values, cmap=matplotlib.colors.ListedColormap(colours),
+    q * 6, r_cost * 3, c=values, cmap=mpl.colors.ListedColormap(colours),
 )
 ax.scatter(
     optimum_params[0] * 6,
@@ -75,10 +79,17 @@ ax.scatter(
     color="b",
     s=np.asarray([200]),
 )
-ax.set_title("SafeSet belief after 200 iterations for SafeOpt")
+ax.set_title("SafeSet belief after 200 \niterations for SafeOpt")
 ax.set_ylim([-3.1, 3.1])
 ax.set_xlim([-6.1, 6.1])
-plt.savefig("./results/panda-robot/data/SafeOpt_SafeSet_200.pdf", format="pdf", dpi=300)
+ax.set_xticks([-6, 0, 6])
+ax.set_yticks([-3, 0, 3])
+plt.savefig(
+    "./results/panda-robot/data/robot-sbo-safeset-200.pdf",
+    format="pdf",
+    dpi=300,
+    bbox_inches="tight",
+)
 
 # DistrSafeOpt
 df_dbo = df_dbo.to_numpy()
@@ -101,8 +112,8 @@ bounds = [[-1, 1], [-1, 1]]
 parameter_set = linearly_spaced_combinations(bounds, num_samples=100)
 opt = SafeOpt([fun_gp, cons_gp], parameter_set, fmin=[-np.inf, 0], beta=3.5)
 
-q = np.linspace(-1, 1, 25)
-r_cost = np.linspace(-1, 1, 25)
+q = np.linspace(-1, 1, 30)
+r_cost = np.linspace(-1, 1, 30)
 a = np.asarray(np.meshgrid(q, r_cost)).T.reshape(-1, 2)
 input = a
 mean, var = opt.gps[1].predict(input)  # predicting `g1` for input
@@ -119,18 +130,20 @@ safe_l_f = l_f[safe_idx]  # safe function values
 safe_max = np.where(l_f == safe_l_f.max())[0]  # safe maximum
 optimum_params = a[safe_max, :]  # take corresponding params
 optimum_params = optimum_params.squeeze()
-q = np.reshape(a[:, 0], [25, 25])  # reshaping 0th (q) column to 25x25
-r_cost = np.reshape(a[:, 1], [25, 25])  # reshaping 1st (r) column to 25x25
-values = values.reshape([25, 25])  # reshaping safe_sate values to 25x25
+q = np.reshape(a[:, 0], [30, 30])  # reshaping 0th (q) column to 30x30
+r_cost = np.reshape(a[:, 1], [30, 30])  # reshaping 1st (r) column to 30x30
+values = values.reshape([30, 30])  # reshaping safe_sate values to 30x30
 colours = ["red", "green"]
 fig = plt.figure(figsize=(10, 10))
 left, bottom, width, height = 0.1, 0.1, 0.8, 0.8
 ax = fig.add_axes([left, bottom, width, height])
 ax.set_xlabel("q")
-ax.set_ylabel("r")
+# ax.set_ylabel("r")
+ax.set_xticks([-6, 0, 6])
+ax.set_yticks([-3, 0, 3])
 cs = ax.contourf(q * 6, r_cost * 3, values)
 ax.scatter(
-    q * 6, r_cost * 3, c=values, cmap=matplotlib.colors.ListedColormap(colours),
+    q * 6, r_cost * 3, c=values, cmap=mpl.colors.ListedColormap(colours),
 )
 ax.scatter(
     optimum_params[0] * 6,
@@ -139,10 +152,15 @@ ax.scatter(
     color="b",
     s=np.asarray([200]),
 )
-ax.set_title("SafeSet belief after 500 iterations for DistrSafeOpt")
+ax.set_title("SafeSet belief after 500 \niterations for DistrSafeOpt")
 ax.set_ylim([-3.1, 3.1])
 ax.set_xlim([-6.1, 6.1])
-plt.savefig("./results/panda-robot/data/DBO_SafeSet_500.pdf", format="pdf", dpi=300)
+plt.savefig(
+    "./results/panda-robot/data/robot-dbo-safeset-500.pdf",
+    format="pdf",
+    dpi=300,
+    bbox_inches="tight",
+)
 
 
 # OvrDistrSafeOpt
@@ -166,8 +184,8 @@ bounds = [[-1, 1], [-1, 1]]
 parameter_set = linearly_spaced_combinations(bounds, num_samples=100)
 opt = SafeOpt([fun_gp, cons_gp], parameter_set, fmin=[-np.inf, 0], beta=3.5)
 
-q = np.linspace(-1, 1, 25)
-r_cost = np.linspace(-1, 1, 25)
+q = np.linspace(-1, 1, 30)
+r_cost = np.linspace(-1, 1, 30)
 a = np.asarray(np.meshgrid(q, r_cost)).T.reshape(-1, 2)
 input = a
 mean, var = opt.gps[1].predict(input)  # predicting `g1` for input
@@ -184,18 +202,18 @@ safe_l_f = l_f[safe_idx]  # safe function values
 safe_max = np.where(l_f == safe_l_f.max())[0]  # safe maximum
 optimum_params = a[safe_max, :]  # take corresponding params
 optimum_params = optimum_params.squeeze()
-q = np.reshape(a[:, 0], [25, 25])  # reshaping 0th (q) column to 25x25
-r_cost = np.reshape(a[:, 1], [25, 25])  # reshaping 1st (r) column to 25x25
-values = values.reshape([25, 25])  # reshaping safe_sate values to 25x25
+q = np.reshape(a[:, 0], [30, 30])  # reshaping 0th (q) column to 30x30
+r_cost = np.reshape(a[:, 1], [30, 30])  # reshaping 1st (r) column to 30x30
+values = values.reshape([30, 30])  # reshaping safe_sate values to 30x30
 colours = ["red", "green"]
 fig = plt.figure(figsize=(10, 10))
 left, bottom, width, height = 0.1, 0.1, 0.8, 0.8
 ax = fig.add_axes([left, bottom, width, height])
 ax.set_xlabel("q")
-ax.set_ylabel("r")
+# ax.set_ylabel("r")
 cs = ax.contourf(q * 6, r_cost * 3, values)
 ax.scatter(
-    q * 6, r_cost * 3, c=values, cmap=matplotlib.colors.ListedColormap(colours),
+    q * 6, r_cost * 3, c=values, cmap=mpl.colors.ListedColormap(colours),
 )
 ax.scatter(
     optimum_params[0] * 6,
@@ -204,7 +222,15 @@ ax.scatter(
     color="b",
     s=np.asarray([200]),
 )
-ax.set_title("SafeSet belief after 500 iterations for OvrDistrSafeOpt")
+ax.set_title("SafeSet belief after 500 \niterations for OvrDistrSafeOpt")
 ax.set_ylim([-3.1, 3.1])
 ax.set_xlim([-6.1, 6.1])
-plt.savefig("./results/panda-robot/data/OvrDBO_SafeSet_500.pdf", format="pdf", dpi=300)
+ax.set_xticks([-6, 0, 6])
+ax.set_yticks([-3, 0, 3])
+plt.savefig(
+    "./results/panda-robot/data/robot-ovr-safeset-500.pdf",
+    format="pdf",
+    dpi=300,
+    bbox_inches="tight",
+)
+

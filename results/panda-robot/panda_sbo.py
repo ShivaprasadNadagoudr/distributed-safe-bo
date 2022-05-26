@@ -255,8 +255,10 @@ class SafeOpt_Optimizer(object):
     ):
         self.upper_eigenvalue = upper_eigenvalue
         self.upper_overshoot = upper_overshoot
-        q = 4 / 6
-        r = -1
+        # q = 4 / 6
+        # r = -1
+        q = 1 / 2
+        r = 0
         self.params = np.asarray([q, r])
         self.failures = 0
         self.failure_overshoot = 0
@@ -316,8 +318,10 @@ class SafeOpt_Optimizer(object):
         """
         Collect more initial policies
         """
-        p = [5 / 6, 1]
-        d = [-0.9, -2 / 3]
+        # p = [5 / 6, 1]
+        # d = [-0.9, -2 / 3]
+        p = [9 / 10, 2 / 3]
+        d = [4 / 5, 1 / 10]
 
         for i in range(2):
             self.params = np.asarray([p[i], d[i]])

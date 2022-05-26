@@ -989,7 +989,7 @@ async def main():
     objective_function = None
     # parameter_set = safeopt.linearly_spaced_combinations(bounds, 1000)
     no_subspaces = 2
-    evaluation_constraint = 500
+    evaluation_constraint = 10
     shared_data: SharedData = SharedData.options(name="SharedData").remote(
         bounds, no_subspaces, evaluation_constraint
     )
